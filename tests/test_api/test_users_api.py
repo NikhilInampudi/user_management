@@ -190,3 +190,100 @@ async def test_list_users_unauthorized(async_client, user_token):
         headers={"Authorization": f"Bearer {user_token}"}
     )
     assert response.status_code == 403  # Forbidden, as expected for regular user
+
+@pytest.mark.asyncio
+async def test_fetch_user_by_id(async_client, admin_user, admin_token):
+    # Request to fetch the user by their unique identifier
+    response = await async_client.get(f"/users/{admin_user.id}", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200, "Expected a successful response"
+    
+    # Validate the content of the response
+    user_info = response.json()
+    assert user_info["id"] == str(admin_user.id), "User ID does not match the expected value"
+
+@pytest.mark.asyncio
+async def test_fetch_nonexistent_user(async_client, admin_token):
+    # Using a clearly invalid UUID to test error handling
+    invalid_user_id = "00000000-0000-0000-0000-000000000000"
+    response = await async_client.get(f"/users/{invalid_user_id}", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 404, "Expected a Not Found response for non-existent user"
+
+@pytest.mark.asyncio
+async def test_modify_user_details(async_client, admin_user, admin_token):
+    # Updating user information, specifically the email address
+    modifications = {"email": "new_email@example.com"}
+    response = await async_client.put(f"/users/{admin_user.id}", json=modifications, headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200, "Expected a successful update response"
+    assert response.json()["email"] == modifications["email"], "Email update not reflected in response"
+
+@pytest.mark.asyncio
+async def test_remove_user(async_client, admin_user, admin_token):
+    # Request to delete a user
+    response = await async_client.delete(f"/users/{admin_user.id}", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 204, "Expected successful deletion status"
+
+    # Attempt to fetch the deleted user to verify removal
+    verification_response = await async_client.get(f"/users/{admin_user.id}", headers={"Authorization": f"Bearer {admin_token}"})
+    assert verification_response.status_code == 404, "Deleted user should no longer be retrievable"
+
+@pytest.mark.asyncio
+async def test_access_user_details(async_client, admin_user, admin_token):
+    # Fetch user details to verify accurate retrieval
+    response = await async_client.get(f"/users/{admin_user.id}", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200, "Failed to retrieve user details"
+    user_details = response.json()
+    assert user_details["id"] == str(admin_user.id) and user_details["email"] == admin_user.email, "Mismatch in user details"
+
+@pytest.mark.asyncio
+async def test_overview_of_users(async_client, admin_token):
+    # Retrieve a list of users
+    response = await async_client.get("/users/", headers={"Authorization": f"Bearer {admin_token}"})
+    assert response.status_code == 200, "Failed to fetch user list"
+    user_list = response.json()
+    assert "items" in user_list, "Response missing expected 'items' key"
+    # Validate pagination and structure of user list further if necessary
+
+@pytest.mark.asyncio
+async def test_update_professional_status_as_admin(async_client, admin_token, regular_user):
+    """Test that an admin can update the professional status."""
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    updated_status = {"is_professional": True}
+    
+    # Attempt to update the professional status
+    response = await async_client.patch(
+        f"/users/{regular_user.id}/professional-status?is_professional=true",
+        headers=headers
+    )
+    assert response.status_code == 200
+    response_data = response.json()
+    assert response_data["id"] == str(regular_user.id)
+    assert response_data["is_professional"] is True
+
+@pytest.mark.asyncio
+async def test_update_professional_status_as_manager(async_client, manager_token, regular_user):
+    """Test that a manager can update the professional status."""
+    headers = {"Authorization": f"Bearer {manager_token}"}
+    updated_status = {"is_professional": False}
+    
+    # Attempt to update the professional status
+    response = await async_client.patch(
+        f"/users/{regular_user.id}/professional-status?is_professional=false",
+        headers=headers
+    )
+    assert response.status_code == 200
+    response_data = response.json()
+    assert response_data["id"] == str(regular_user.id)
+    assert response_data["is_professional"] is False
+
+@pytest.mark.asyncio
+async def test_update_professional_status_access_denied(async_client, user_token, regular_user):
+    """Test that a regular user cannot update the professional status."""
+    headers = {"Authorization": f"Bearer {user_token}"}
+    
+    # Attempt to update the professional status, expecting an error
+    response = await async_client.patch(
+        f"/users/{regular_user.id}/professional-status?is_professional=true",
+        headers=headers
+    )
+    assert response.status_code == 403  # Forbidden
+    assert "Operation not permitted" in response.json()["detail"]
