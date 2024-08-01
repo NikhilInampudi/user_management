@@ -109,10 +109,12 @@ class UserService:
                 return updated_user
             else:
                 return None
+
         except Exception as e:
             logger.error(f"Error during user update: {e}")
             return None
     
+
 
 
     @classmethod
