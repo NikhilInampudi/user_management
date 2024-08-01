@@ -27,6 +27,7 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from fastapi import APIRouter, Depends, HTTPException, Response, status, Request, Query
+
 import app
 from app.dependencies import get_current_user, get_db, get_email_service, require_role
 from app.schemas.pagination_schema import EnhancedPagination
@@ -37,6 +38,7 @@ from app.services.jwt_service import create_access_token
 from app.utils.link_generation import create_user_links, generate_pagination_links
 from app.dependencies import get_settings
 import pytest
+
 from fastapi import APIRouter, HTTPException, status, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
