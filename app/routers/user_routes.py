@@ -20,10 +20,14 @@ Key Highlights:
 
 from builtins import dict, int, len, str
 from datetime import timedelta
+from http import HTTPStatus
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Response, status, Request
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, Depends, HTTPException, Response, status, Request, Query
+import app
 from app.dependencies import get_current_user, get_db, get_email_service, require_role
 from app.schemas.pagination_schema import EnhancedPagination
 from app.schemas.token_schema import TokenResponse
@@ -32,9 +36,61 @@ from app.services.user_service import UserService
 from app.services.jwt_service import create_access_token
 from app.utils.link_generation import create_user_links, generate_pagination_links
 from app.dependencies import get_settings
+import pytest
+from fastapi import APIRouter, HTTPException, status, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from uuid import UUID
+from app.schemas.user_schemas import UserUpdate, UserResponse
+from app.services.user_service import UserService
+from app.dependencies import get_db, oauth2_scheme, require_role
+from uuid import UUID
+from typing import Optional
+from fastapi import Query
+from datetime import datetime
+from app.schemas.user_schemas import UserListResponse
 from app.services.email_service import EmailService
 router = APIRouter()
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+# Setting up the OAuth2 scheme
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
+
+@router.post("/token", response_model=TokenResponse)
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(), 
+    db_session: AsyncSession = Depends(get_db)
+):
+    # Check if the account is locked
+    if await UserService.is_account_locked(db_session, form_data.username):
+        raise HTTPException(
+            status_code=400, 
+            detail="Account locked due to too many failed login attempts."
+        )
+    
+    # Attempt to login user with provided credentials
+    authenticated_user = await UserService.login_user(db_session, form_data.username, form_data.password)
+    if authenticated_user:
+        token_expiration = timedelta(minutes=settings.access_token_expire_minutes)
+        token_data = {
+            "sub": authenticated_user.email,
+            "role": str(authenticated_user.role.name)
+        }
+        
+        # Generate access token
+        access_token = create_access_token(
+            data=token_data, 
+            expires_delta=token_expiration
+        )
+
+        # Return the access token and type
+        return {
+            "access_token": access_token, 
+            "token_type": "bearer"
+        }
+
+    # If login fails, raise an unauthorized error
+    raise HTTPException(
+        status_code=401, 
+        detail="Incorrect email or password."
+    )
 settings = get_settings()
 @router.get("/users/{user_id}", response_model=UserResponse, name="get_user", tags=["User Management Requires (Admin or Manager Roles)"])
 async def get_user(user_id: UUID, request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(oauth2_scheme), current_user: dict = Depends(require_role(["ADMIN", "MANAGER"]))):
@@ -68,7 +124,8 @@ async def get_user(user_id: UUID, request: Request, db: AsyncSession = Depends(g
         last_login_at=user.last_login_at,
         created_at=user.created_at,
         updated_at=user.updated_at,
-        links=create_user_links(user.id, request)  
+        links=create_user_links(user.id, request),
+        is_professional=user.is_professional  
     )
 
 # Additional endpoints for update, delete, create, and list users follow a similar pattern, using
@@ -79,7 +136,14 @@ async def get_user(user_id: UUID, request: Request, db: AsyncSession = Depends(g
 # experience by adhering to REST principles and providing self-discoverable operations.
 
 @router.put("/users/{user_id}", response_model=UserResponse, name="update_user", tags=["User Management Requires (Admin or Manager Roles)"])
-async def update_user(user_id: UUID, user_update: UserUpdate, request: Request, db: AsyncSession = Depends(get_db), token: str = Depends(oauth2_scheme), current_user: dict = Depends(require_role(["ADMIN", "MANAGER"]))):
+async def update_user(
+    user_id: UUID,
+    user_update: UserUpdate,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    token: str = Depends(oauth2_scheme),
+    current_user: dict = Depends(require_role(["ADMIN", "MANAGER"]))
+):
     """
     Update user information.
 
@@ -87,6 +151,11 @@ async def update_user(user_id: UUID, user_update: UserUpdate, request: Request, 
     - **user_update**: UserUpdate model with updated user information.
     """
     user_data = user_update.model_dump(exclude_unset=True)
+
+    # Restrict sensitive fields based on user roles
+    if current_user["role"] not in ["ADMIN", "MANAGER"]:
+        user_data.pop("role", None)  # Remove `role` field if not an admin/manager
+
     updated_user = await UserService.update(db, user_id, user_data)
     if not updated_user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -103,9 +172,49 @@ async def update_user(user_id: UUID, user_update: UserUpdate, request: Request, 
         profile_picture_url=updated_user.profile_picture_url,
         github_profile_url=updated_user.github_profile_url,
         linkedin_profile_url=updated_user.linkedin_profile_url,
+        is_professional=updated_user.is_professional,
         created_at=updated_user.created_at,
         updated_at=updated_user.updated_at,
         links=create_user_links(updated_user.id, request)
+    )
+
+
+@router.patch("/users/{user_id}/professional-status", response_model=UserResponse, tags=["User Management"])
+async def update_professional_status(
+    user_id: UUID,
+    is_professional: bool,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(require_role(["ADMIN", "MANAGER"]))
+):
+    # Retrieve the user from the database
+    user = await UserService.get_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Check that the current user has the right role (ADMIN or MANAGER)
+    if current_user["role"] not in ["ADMIN", "MANAGER"]:
+        raise HTTPException(status_code=403, detail="You are not authorized to update this user's professional status")
+
+    # Update the professional status
+    user.is_professional = is_professional
+    await db.commit()
+
+    # Return the updated user information
+    return UserResponse(
+        id=user.id,
+        nickname=user.nickname,
+        email=user.email,
+        is_professional=user.is_professional,
+        professional_status_updated_at=datetime.now(),  # Update the timestamp or get it from the model
+        bio=user.bio,
+        first_name=user.first_name,
+        last_name=user.last_name,
+        profile_picture_url=user.profile_picture_url,
+        linkedin_profile_url=user.linkedin_profile_url,
+        github_profile_url=user.github_profile_url,
+        role=user.role,
+        created_at=user.created_at,
+        updated_at=user.updated_at
     )
 
 
@@ -161,7 +270,10 @@ async def create_user(user: UserCreate, request: Request, db: AsyncSession = Dep
         last_login_at=created_user.last_login_at,
         created_at=created_user.created_at,
         updated_at=created_user.updated_at,
-        links=create_user_links(created_user.id, request)
+        links=create_user_links(created_user.id, request),
+        is_professional=created_user.is_professional,
+        linkedin_profile_url=created_user.linkedin_profile_url,
+        github_profile_url=created_user.github_profile_url
     )
 
 
@@ -245,3 +357,79 @@ async def verify_email(user_id: UUID, token: str, db: AsyncSession = Depends(get
     if await UserService.verify_email_with_token(db, user_id, token):
         return {"message": "Email verified successfully"}
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid or expired verification token")
+
+@router.get("/users/search/", response_model=UserListResponse, tags=["User Management Requires (Admin or Manager Roles)"])
+async def search_users(
+    request: Request,
+    username: Optional[str] = Query(None, description="Username to search for"),
+    email: Optional[str] = Query(None, description="Email to search for"),
+    first_name: Optional[str] = Query(None, description="First name to search for"),
+    last_name: Optional[str] = Query(None, description="Last name to search for"),
+    role: Optional[str] = Query(None, description="Role to search for"),
+    account_status: Optional[str] = Query(None, description="Account status to filter (active or locked)"),
+    registration_date_from: Optional[datetime] = Query(None, description="Start of registration date range"),
+    registration_date_to: Optional[datetime] = Query(None, description="End of registration date range"),
+    skip: int = Query(0, description="Number of records to skip"),
+    limit: int = Query(10, description="Maximum number of records to return"),
+    db: AsyncSession = Depends(get_db)
+):
+    total_users = await UserService.count(db)
+
+    users = await UserService.search_users(db, username=username, email=email, first_name=first_name, last_name=last_name, role=role, account_status=account_status, registration_date_from=registration_date_from, registration_date_to=registration_date_to, skip=skip, limit=limit)
+
+    if not users:
+        raise HTTPException(status_code=404, detail="No users found with the provided criteria.")
+
+    user_responses = [
+        UserResponse.model_validate(user) for user in users
+    ]
+
+    pagination_links = generate_pagination_links(request, skip, limit, total_users)
+
+    return UserListResponse(
+        items=user_responses,
+        total=total_users,
+        page=skip // limit + 1,
+        size=len(user_responses),
+        links=pagination_links
+    )
+
+#Pytest test case for the create user endpoint, ISSUE #9
+
+@pytest.fixture
+def client():
+    with TestClient(app) as c:
+        yield c
+
+@pytest.fixture
+async def db_session():
+    # Assuming you have a session maker or a similar setup
+    session = AsyncSession()
+    yield session
+    await session.rollback()
+
+def test_create_user_endpoint(client, db_session):
+    # Define user creation data including professional status and profile URLs
+    user_data = {
+        "email": "newprofessional@example.com",
+        "password": "strongpassword",
+        "nickname": "newpro123",
+        "is_professional": True,
+        "linkedin_profile_url": "https://linkedin.com/in/newpro123",
+        "github_profile_url": "https://github.com/newpro123"
+    }
+
+    # Send POST request to the create user endpoint
+    response = client.post("/users/", json=user_data)
+    assert response.status_code == HTTPStatus.CREATED, "Expected 201, got {response.status_code}"
+
+    # Check the response data
+    response_json = response.json()
+    assert response_json['email'] == user_data['email'], "Email mismatch in response"
+    assert response_json['nickname'] == user_data['nickname'], "Nickname mismatch in response"
+    assert response_json['is_professional'] == user_data['is_professional'], "Professional status mismatch in response"
+    assert response_json['linkedin_profile_url'] == user_data['linkedin_profile_url'], "LinkedIn URL mismatch in response"
+    assert response_json['github_profile_url'] == user_data['github_profile_url'], "GitHub URL mismatch in response"
+
+    # Optionally, verify that the response includes navigation links
+    assert 'links' in response_json, "Response should include navigation links"
