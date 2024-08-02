@@ -6,9 +6,7 @@ The user management system is an excellent Python project for learning due to it
 
 
 ### [DockerHub Repository](https://hub.docker.com/repository/docker/ninam001/user_management/general)
-
-![DockerHub User Management](C:/Users/nikhi/Pictures/Screenshots/DockerHub%20User%20Management.png)
-
+<img width="1429" alt="Captura de pantalla 2024-05-07 a la(s) 9 08 32 p m" src="https://github.com/NikhilInampudi/user_management/blob/486f6de2720be7ae2e5def1b787d8be4199f031f/DockerHub%20User%20Management.png">
 
 
 # The User Management System Final Project: Your Epic Coding Adventure Awaits! 🎉✨🔥
